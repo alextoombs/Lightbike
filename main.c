@@ -70,9 +70,10 @@
 #define DECIMAL 0x2E
 
 // voltage reading from current sensor; global variable
-double Cvolt=0;
-double Bvolt=0;
+double Csensor_volt=0;
+double Battery_volt=0;
 unsigned int offset;
+int shift = 51;
 
 // Loops continuously to adjust current source output
 int main(int argc, char** argv) {
@@ -92,8 +93,6 @@ int main(int argc, char** argv) {
     // get analog voltage reading, store, write to DAC Vout.  Always runs
     while(1)
     {
-        // logic for increasing/decreasing current and voltage to battery
-        CurrentControl();
     }
     return (EXIT_SUCCESS);
 }
@@ -102,10 +101,6 @@ int main(int argc, char** argv) {
 void __ISR(8, IPL3AUTO) Timer2Hand(void)
 {
         INTClearFlag(INT_T2);
-        // Output to UART in text, showing voltage formatted as double
-        printf("\nVoltage Reading is: %5.2f \n", Cvolt);
-        printf("Voltage 2 Reading is: %5.2f \n", Bvolt);
-
         // Display current voltage reading from analog pin B7 on LCD
         SendI2C3(LED,LEDREG,LEDCLR);
         SendI2C2(LED,V);
@@ -123,6 +118,10 @@ void __ISR(8, IPL3AUTO) Timer2Hand(void)
         SendI2C2(LED,ParseThird());
         SendI2C3(LED, LEDREG, LEDRIGHT);
         SendI2C2(LED,V);
+
+        // logic for increasing/decreasing current and voltage to battery
+        CurrentControl();
+//        SendI2CGen(0b00000000);
 }
 
 // Configure bits for Timer operation
@@ -187,8 +186,8 @@ void getAnalog()
         // (we don't want to read the active buffer)
 	offset = 8 * ((~ReadActiveBufferADC10() & 0x01));  // determine which buffer is idle and create an offset
 
-		Cvolt = ReadADC10(offset)*.003185;  		// read the result of channel 4 conversion from the idle buffer
-		Bvolt = ReadADC10(offset + 1)*.003185;  	// read the result of channel 5 conversion from the idle buffer
+		Csensor_volt = ReadADC10(offset)*.003185;  		// read the result of channel 4 conversion from the idle buffer
+		Battery_volt = ReadADC10(offset + 1)*.003185;  	// read the result of channel 5 conversion from the idle buffer
     mAD1ClearIntFlag();
     // Clear ADC interrupt flag
 }
@@ -310,157 +309,119 @@ void SendI2C2(char addrs, char data)
     I2C_stop();
 }
 
-//void SendI2CDAC(char addrs, int dacVal)
-//{
-//    char ack;
-//    int readVal;
-//    I2C_start();
-//    ack=I2C_write(addrs); //Address for DAC is 0x60
-//    readVal=I2C_writeDAC(dacVal);
-//    I2C_stop();
-//}
-
-// Parse first digit (ones place) of Cvolt for printing to LCD
+// Parse first digit (ones place) of Csensor_volt for printing to LCD
 char ParseFirst()
 {
-    if(Cvolt<1)
+    if(Csensor_volt<1)
         return ZERO;
-    if(Cvolt<2)
+    if(Csensor_volt<2)
         return ONE;
-    if(Cvolt<3)
+    if(Csensor_volt<3)
         return TWO;
-    if(Cvolt<4)
+    if(Csensor_volt<4)
         return THREE;
 }
 
-// Parse second digit (tenth place) of Cvolt for printing to LCD
+// Parse second digit (tenth place) of Csensor_volt for printing to LCD
 char ParseSecond()
 {
-   if(fmod(Cvolt*10,10.0)<1)
+   if(fmod(Csensor_volt*10,10.0)<1)
         return ZERO;
-    if(fmod(Cvolt*10,10.0)<2)
+    if(fmod(Csensor_volt*10,10.0)<2)
         return ONE;
-    if(fmod(Cvolt*10,10.0)<3)
+    if(fmod(Csensor_volt*10,10.0)<3)
         return TWO;
-    if(fmod(Cvolt*10,10.0)<4)
+    if(fmod(Csensor_volt*10,10.0)<4)
         return THREE;
-    if(fmod(Cvolt*10,10.0)<5)
+    if(fmod(Csensor_volt*10,10.0)<5)
         return FOUR;
-    if(fmod(Cvolt*10,10.0)<6)
+    if(fmod(Csensor_volt*10,10.0)<6)
         return FIVE;
-    if(fmod(Cvolt*10,10.0)<7)
+    if(fmod(Csensor_volt*10,10.0)<7)
         return SIX;
-    if(fmod(Cvolt*10,10.0)<8)
+    if(fmod(Csensor_volt*10,10.0)<8)
         return SEVEN;
-    if(fmod(Cvolt*10,10.0)<9)
+    if(fmod(Csensor_volt*10,10.0)<9)
         return EIGHT;
-    if(fmod(Cvolt*10,10.0)<10)
+    if(fmod(Csensor_volt*10,10.0)<10)
         return NINE;
 }
 
-// Parse third digit (hundredths place) of Cvolt for LCD outputting
+// Parse third digit (hundredths place) of Csensor_volt for LCD outputting
 char ParseThird()
 {
-   if(fmod(Cvolt*100,10.0)<1)
+   if(fmod(Csensor_volt*100,10.0)<1)
         return ZERO;
-    if(fmod(Cvolt*100,10.0)<2)
+    if(fmod(Csensor_volt*100,10.0)<2)
         return ONE;
-    if(fmod(Cvolt*100,10.0)<3)
+    if(fmod(Csensor_volt*100,10.0)<3)
         return TWO;
-    if(fmod(Cvolt*100,10.0)<4)
+    if(fmod(Csensor_volt*100,10.0)<4)
         return THREE;
-    if(fmod(Cvolt*100,10.0)<5)
+    if(fmod(Csensor_volt*100,10.0)<5)
         return FOUR;
-    if(fmod(Cvolt*100,10.0)<6)
+    if(fmod(Csensor_volt*100,10.0)<6)
         return FIVE;
-    if(fmod(Cvolt*100,10.0)<7)
+    if(fmod(Csensor_volt*100,10.0)<7)
         return SIX;
-    if(fmod(Cvolt*100,10.0)<8)
+    if(fmod(Csensor_volt*100,10.0)<8)
         return SEVEN;
-    if(fmod(Cvolt*100,10.0)<9)
+    if(fmod(Csensor_volt*100,10.0)<9)
         return EIGHT;
-    if(fmod(Cvolt*100,10.0)<10)
+    if(fmod(Csensor_volt*100,10.0)<10)
         return NINE;
 }
 
-// Convert decimal number to binary for DAC output purposes
-// Returns dec as binary char
-char decToDAC(int dec) {
-    // confirm that dec is 8 bits or less
-    if(dec <= 255|dec>=0) {
-        char bits[] = "0b00000000";
-        int j;
-
-        // counts down from most significant to least
-        // j = 7 for 8 bits (0 to 7 inclusive)
-        for(j = 7; j >= 0; j--) {
-            int k = dec >> j;
-
-            if(k & 1)
-                bits[9-j] = '1';
-            else if(k & 0)
-                bits[9-j] = '0';
-
-            // UART debug statements
-//            printf("decToDAC Bit #%2d: ", 8-j);
-//            printf("%8s\n\n", bits);
-        }
-        return bits;
-    }
-    else if(dec<=255) {
-        char high[] = "0b11111111";
-//        char *highP = &high;
-        return high;
-    }
-    else {
-        char low[] = "0b00000000";
-//        char *lowP = &low;
-        return low;
-    }
-}
-
-// Control voltage sent to DAC as a function of Cvolt read from current sensor
+// Control voltage sent to DAC as a function of Csensor_volt read from current sensor
 void CurrentControl()
 {
     double current;
-    //char dacVal[] = "0b00000000";
-
-    // shift is the decimal value we use to control DAC
-    int shift = 0;
-    // Gets values for Cvolt and Bvolt
+    // Gets values for Csensor_volt and Battery_volt
     getAnalog();
-    // ARBITRARY CONVERSION, NEED TO CHANGE
-    current = Cvolt*.0035;
+    // linear fit conversion from voltage to current
+    current = 10*(1.482*Csensor_volt - 3.7085);
 
-    // Current should be between 8A and 9A at all times for safety
-    if(current <= 8)
+    // Current should be between 0.8A and 1.2A at all times for safety
+    if(current <= 0.8)
     {
-        // if current is less than 8A, increase DAC value
-        shift++;
+        // if current is less than 0.8A, increase DAC value
+        shift = shift + 1;
 
         // safety control; keep shift at 255 (max) if it tries to go higher
         if(shift > 255)
             shift = 255;
-        char dacVal=decToDAC(shift);
-        printf("\nshift is: %3d\n", shift);
-        printf("dacVal: %8s", dacVal);
+
+        //char send = decToDAC(shift);
+
+        // Output to UART in text
+        printf("\nShifting up; shift is: %3d\n", shift);
+        printf("Current is: %3.2f A\n", current);
+        printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+        printf("Voltage Reading is: %5.2f \n", Csensor_volt);
+        printf("Voltage 2 Reading is: %5.2f \n", Battery_volt);
+
         // write value to DAC Vout register
-//        char *dacValP = &dacVal;
-        SendI2C3(DAC,0b00000000,dacVal);
+        SendI2C3(DAC,0b00000000,shift);
     }
-    else if(current >= 9)
+    else if(current > 1.2)
     {
-        // if current is more than 9A, decrease DAC value
-        shift--;
+        // if current is more than 1.2A, decrease DAC value
+        shift = shift - 1;
 
         // safety control; keep shift at 0 if it tries to go lower
         if( shift < 0)
             shift = 0;
-        char dacVal=decToDAC(shift);
-        printf("shift is: %3d\n", shift);
-        printf("dacVal: %8s", dacVal);
+
+        //char send = decToDAC(shift);
+
+        // Output to UART in text
+        printf("\nShifting down; shift is: %3d\n", shift);
+        printf("Current is: %3.2f A\n", current);
+        printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+        printf("Voltage Reading is: %5.2f \n", Csensor_volt);
+        printf("Voltage 2 Reading is: %5.2f \n", Battery_volt);
+
         // write value to DAC Vout register
-//        char *dacValP = &dacVal;
-        SendI2C3(DAC,0b00000000,dacVal);
+        SendI2C3(DAC,0b00000000,shift);
     }
 }

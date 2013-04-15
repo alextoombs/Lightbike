@@ -37,7 +37,6 @@ void I2C_idle();
 void SendI2C3(char addrs, char regis, char data);
 void SendI2C2(char addrs, char data);
 void SendI2CGen(char regis);
-char decToDAC(int dec);
 void CurrentControl();
 
 #ifdef	__cplusplus
