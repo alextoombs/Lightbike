@@ -10,9 +10,15 @@
  *      sourced to battery accordingly, using I2C to communicate with MCP
  *      4706DAC.
  *
+ * Analog pinout on board:
+ *      A12:  Current Sensor
+ *      A7:  Battery Stack Voltage (through divider)
+ *      A6:  Power MOSFET Voltage
+ *      A2,A3,A4,A5,A8,A9:  Temperature Sensors
+ *
  * Created on November 26, 2012, 8:26 PM
  *
- * Last Modified:  April 3, 2013
+ * Last Modified:  April 17, 2013
  */
 
 #include <stdio.h>
@@ -72,12 +78,40 @@
 // voltage reading from current sensor; global variable
 double Csensor_volt=0;
 double Battery_volt=0;
+
+// MOSFET voltage
+double mosVolt = 0;
+
 unsigned int offset;
+
+// offset to adjust the DAC value
 int shift = 51;
+
+// read-in voltages from temperature sensors, in Volts
+double vt1 = 0;
+double vt2 = 0;
+double vt3 = 0;
+double vt4 = 0;
+double vt5 = 0;
+double vt6 = 0;
+
+// converted temp sensor readings, in degrees C
+double temp1;
+double temp2;
+double temp3;
+double temp4;
+double temp5;
+double temp6;
+
+// battery temp limit, in degrees C
+static double tempLimit = 51;
+
+// effective boolean to determine if it's charging or not (1 = true)
+int isCharging = 1;
 
 // Loops continuously to adjust current source output
 int main(int argc, char** argv) {
-    // Uart Config 57600
+    // Uart Config 57600 (serial baud rate)
     UartConfig();
     // Timer Interrupts
     ConfigTime();
@@ -90,14 +124,14 @@ int main(int argc, char** argv) {
     TRISE = 0;
     LATE = 0xFF;
       
-    // get analog voltage reading, store, write to DAC Vout.  Always runs
+    // run continously to keep program running
     while(1)
     {
     }
     return (EXIT_SUCCESS);
 }
 
-// Configure timer and print present reading to PuTTY
+// Configure timer and print present reading to PuTTY, and control current
 void __ISR(8, IPL3AUTO) Timer2Hand(void)
 {
         INTClearFlag(INT_T2);
@@ -118,6 +152,9 @@ void __ISR(8, IPL3AUTO) Timer2Hand(void)
         SendI2C2(LED,ParseThird());
         SendI2C3(LED, LEDREG, LEDRIGHT);
         SendI2C2(LED,V);
+
+        // update temperature sensor values from battery
+        updateTemps();
 
         // logic for increasing/decreasing current and voltage to battery
         CurrentControl();
@@ -149,24 +186,26 @@ void ConfigTime()
 }
 
 // Configure analog registers to read value from sensor
+// TO-DO: ADD SIX ANALOG READ PINS FOR TEMP SENSORS
 void ConfigAnalog()
 {
     // ensure the ADC is off before setting the configuration
     CloseADC10();
     // Turn module on  |ouput in integer| trigger mode auto | enable autosample
-    #define PARAM1  ADC_MODULE_ON | ADC_FORMAT_INTG | ADC_CLK_AUTO | ADC_AUTO_SAMPLING_ON
+    #define PARAM1  ADC_MODULE_ON | ADC_FORMAT_INTG16 | ADC_CLK_AUTO | ADC_AUTO_SAMPLING_ON
     // ADC ref external   | disable offset test    | disable scan mode
     //      | perform 8 samples | use dual buffers | use alternate mode
-    #define PARAM2  ADC_VREF_AVDD_AVSS | ADC_OFFSET_CAL_DISABLE | ADC_SCAN_OFF | ADC_SAMPLES_PER_INT_2 | ADC_ALT_BUF_ON | ADC_ALT_INPUT_ON
+    #define PARAM2  ADC_VREF_AVDD_AVSS | ADC_OFFSET_CAL_DISABLE | ADC_SCAN_ON | ADC_SAMPLES_PER_INT_12 | ADC_ALT_BUF_OFF | ADC_ALT_INPUT_OFF
     // use ADC PB clock| set sample time | auto
-    #define PARAM3  ADC_CONV_CLK_INTERNAL_RC | ADC_SAMPLE_TIME_15
-    // AN7 as analog inputs
-    #define PARAM4	ENABLE_AN7_ANA | ENABLE_AN8_ANA
+    #define PARAM3  ADC_CONV_CLK_INTERNAL_RC | ADC_SAMPLE_TIME_13 | ADC_CONV_CLK_16Tcy
+    // analog inputs for current sensor, battery voltage,
+    //      mosfet voltage, temp sensors.
+    #define PARAM4  ENABLE_ALL_ANA
     // do not assign channels to scan
-    #define PARAM5	SKIP_SCAN_ALL
+    #define PARAM5  0
 
-    // configure to sample AN7 B7 and AN8
-    SetChanADC10( ADC_CH0_NEG_SAMPLEA_NVREF | ADC_CH0_POS_SAMPLEA_AN7|  ADC_CH0_NEG_SAMPLEB_NVREF | ADC_CH0_POS_SAMPLEB_AN8);
+    // configure all analog pins to read in
+    SetChanADC10(ADC_CH0_NEG_SAMPLEA_NVREF);
     // configure ADC using the parameters defined above
     OpenADC10( PARAM1, PARAM2, PARAM3, PARAM4, PARAM5 );
     // Note the 65 NS minimum TAD from datasheet, don't use FRM
@@ -174,7 +213,7 @@ void ConfigAnalog()
     EnableADC10();
 }
 
-// Read in analog voltage from ADC
+// Read analog pin values for voltages and temperatures
 void getAnalog()
 {
     while ( ! mAD1GetIntFlag() )
@@ -182,12 +221,25 @@ void getAnalog()
         // wait for the first conversion to complete so there
         // will be vaild data in ADC result registers
     }
-        // Reads the buffer that is not being populated
-        // (we don't want to read the active buffer)
-	offset = 8 * ((~ReadActiveBufferADC10() & 0x01));  // determine which buffer is idle and create an offset
+    // Reads the buffer that is not being populated
+    // (we don't want to read the active buffer)
+    //       determine which buffer is idle and create an offset
+//    offset = 16 * ((~ReadActiveBufferADC10() & 0x01));
 
-		Csensor_volt = ReadADC10(offset)*.003185;  		// read the result of channel 4 conversion from the idle buffer
-		Battery_volt = ReadADC10(offset + 1)*.003185;  	// read the result of channel 5 conversion from the idle buffer
+    Csensor_volt = ReadADC10(12)*.003185; // pin 12 (APPEARS BROKEN)
+    Battery_volt = ReadADC10(7)*.003185;  // pin 7
+
+    // get mosfet voltage
+    mosVolt = ReadADC10(6) * .003185; // pin 6
+
+    // get temp sensor voltages
+    vt1 = ReadADC10(2) * .003185; // pin 2
+    vt2 = ReadADC10(3) * .003185; // pin 3
+    vt3 = ReadADC10(4) * .003185; // pin 4
+    vt4 = ReadADC10(5) * .003185; // pin 5
+    vt5 = ReadADC10(8) * .003185; // pin 8
+    vt6 = ReadADC10(9) * .003185; // pin 9
+
     mAD1ClearIntFlag();
     // Clear ADC interrupt flag
 }
@@ -376,52 +428,95 @@ char ParseThird()
 void CurrentControl()
 {
     double current;
-    // Gets values for Csensor_volt and Battery_volt
-    getAnalog();
-    // linear fit conversion from voltage to current
-    current = 10*(1.482*Csensor_volt - 3.7085);
+    // current control bounds, in Amps
+    double highBound = 1.2;
+    double lowBound = 0.8;
 
-    // Current should be between 0.8A and 1.2A at all times for safety
-    if(current <= 0.8)
-    {
-        // if current is less than 0.8A, increase DAC value
-        shift = shift + 1;
-
-        // safety control; keep shift at 255 (max) if it tries to go higher
-        if(shift > 255)
-            shift = 255;
-
-        //char send = decToDAC(shift);
-
-        // Output to UART in text
-        printf("\nShifting up; shift is: %3d\n", shift);
-        printf("Current is: %3.2f A\n", current);
-        printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-        printf("Voltage Reading is: %5.2f \n", Csensor_volt);
-        printf("Voltage 2 Reading is: %5.2f \n", Battery_volt);
+    // temperature control
+    if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
+            temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
+        isCharging = 0;
+        shift = 0;
+        printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
 
         // write value to DAC Vout register
         SendI2C3(DAC,0b00000000,shift);
     }
-    else if(current > 1.2)
-    {
-        // if current is more than 1.2A, decrease DAC value
-        shift = shift - 1;
+    else {
+        // Gets values for Csensor_volt and Battery_volt
+        getAnalog();
 
-        // safety control; keep shift at 0 if it tries to go lower
-        if( shift < 0)
-            shift = 0;
+        // linear fit conversion from voltage to current
+        // TO-DO:  needs more work
+        current = abs(10*(1.482*Csensor_volt - 3.7085));
 
-        //char send = decToDAC(shift);
+        // settles DAC output if current is around 0, or goes through process
+        if(Csensor_volt <= 2.53 && Csensor_volt >= 2.47) {
+            shift = 50;
+            printf("\nCurrent sensor at 0, holding at shift=50...\n");
+        }
+        else {
+            // Current should be between lowBound and highBound at all times for safety
+            if(current <= lowBound)
+            {
+                isCharging = 1;
 
-        // Output to UART in text
-        printf("\nShifting down; shift is: %3d\n", shift);
-        printf("Current is: %3.2f A\n", current);
-        printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-        printf("Voltage Reading is: %5.2f \n", Csensor_volt);
-        printf("Voltage 2 Reading is: %5.2f \n", Battery_volt);
+                // if current is less than lowBound, increase DAC value
+                shift = shift + 1;
 
-        // write value to DAC Vout register
-        SendI2C3(DAC,0b00000000,shift);
+                // safety control; keep shift at 255 (max) if it tries to go higher
+                if(shift > 255)
+                    shift = 255;
+
+                // Output to UART in text
+                printf("\nShifting up; shift is: %3d\n", shift);
+                printf("Current is: %3.2f A\n", current);
+                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+
+                // write value to DAC Vout register
+                SendI2C3(DAC,0b00000000,shift);
+            }
+            else if(current > highBound)
+            {
+                isCharging = 1;
+
+                // if current is more than highBound, decrease DAC value
+                shift = shift - 1;
+
+                // safety control; keep shift at 0 if it tries to go lower
+                if( shift < 0)
+                    shift = 0;
+
+                // Output to UART in text
+                printf("\nShifting down; shift is: %3d\n", shift);
+                printf("Current is: %3.2f A\n", current);
+                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+
+                // write value to DAC Vout register
+                SendI2C3(DAC,0b00000000,shift);
+            }
+        }
     }
+}
+
+// updates temperatures of battery stack
+void updateTemps() {
+    temp1 = vt1 * 100.0;
+    temp2 = vt2 * 100.0;
+    temp3 = vt3 * 100.0;
+    temp4 = vt4 * 100.0;
+    temp5 = vt5 * 100.0;
+    temp6 = vt6 * 100.0;
+
+    // print temps to UART
+    printf("\nTemp1: %3.2f C\n", temp1);
+    printf("Temp2: %3.2f C\n", temp2);
+    printf("Temp3: %3.2f C\n", temp3);
+    printf("Temp4: %3.2f C\n", temp4);
+    printf("Temp5: %3.2f C\n", temp5);
+    printf("Temp6: %3.2f C\n", temp6);
 }
