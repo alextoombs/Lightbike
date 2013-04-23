@@ -1,5 +1,5 @@
 /*
- * File:   newmain.c
+ * File:   main.c
  * Author: Mike Mellitt
  *         Ben Coffey
  *         Jake Thordahl
@@ -81,9 +81,18 @@
 // boolean to set debug (UART out or not)
 int debug = true;
 
+// boolean to set temp control
+int tempControlOn = true;
+
 // voltage reading from current sensor; global variable
 double Csensor_volt=0;
 double Battery_volt=0;
+
+// current through stack
+double current = 0;
+
+// max rating (in volts) through A7 if stack is at 88 V
+double maxStackV = 2.73;
 
 // MOSFET voltage
 double mosVolt = 0;
@@ -112,8 +121,8 @@ double temp6;
 // battery temp limit, in degrees C
 static double tempLimit = 51;
 
-// effective boolean to determine if it's charging or not (1 = true)
-int isCharging = 1;
+// double timer to control 1 hour @ 2 Amp charging routine; 120 => been 1 hour
+double finChargeTime = 0;
 
 // Loops continuously to adjust current source output
 int main(int argc, char** argv) {
@@ -127,7 +136,7 @@ int main(int argc, char** argv) {
     ConfigI2C();
 
     // disable JTAG so pin 12 can be used
-    DPCONbits.JTAGEN = 0;
+    DDPCONbits.JTAGEN = 0;
 
     // Configure output ports
     TRISE = 0;
@@ -140,34 +149,73 @@ int main(int argc, char** argv) {
     return (EXIT_SUCCESS);
 }
 
-// Configure timer and print present reading to PuTTY, and control current
+// Configure timer to interrupt every 0.5 seconds
 void __ISR(8, IPL3AUTO) Timer2Hand(void)
 {
         INTClearFlag(INT_T2);
-        // Display current voltage reading from analog pin B7 on LCD
-        SendI2C3(LED,LEDREG,LEDCLR);
-        SendI2C2(LED,V);
-        SendI2C2(LED,O);
-        SendI2C2(LED,L);
-        SendI2C2(LED,T);
-        SendI2C2(LED,A);
-        SendI2C2(LED,G);
-        SendI2C2(LED,E);
-        SendI2C2(LED,COLON);
-        SendI2C3(LED,LEDREG,LEDRIGHT);
-        SendI2C2(LED,ParseFirst());
-        SendI2C2(LED,DECIMAL);
-        SendI2C2(LED,ParseSecond());
-        SendI2C2(LED,ParseThird());
-        SendI2C3(LED, LEDREG, LEDRIGHT);
-        SendI2C2(LED,V);
+        if(debug==true) {
+            // Display current voltage reading from analog pin B12 on LCD
+            SendI2C3(LED,LEDREG,LEDCLR);
+            SendI2C2(LED,V);
+            SendI2C2(LED,O);
+            SendI2C2(LED,L);
+            SendI2C2(LED,T);
+            SendI2C2(LED,A);
+            SendI2C2(LED,G);
+            SendI2C2(LED,E);
+            SendI2C2(LED,COLON);
+            SendI2C3(LED,LEDREG,LEDRIGHT);
+            SendI2C2(LED,ParseFirst());
+            SendI2C2(LED,DECIMAL);
+            SendI2C2(LED,ParseSecond());
+            SendI2C2(LED,ParseThird());
+            SendI2C3(LED, LEDREG, LEDRIGHT);
+            SendI2C2(LED,V);
+        }
 
         // update temperature sensor values from battery
         updateTemps();
 
-        // logic for increasing/decreasing current and voltage to battery
+        // charging logic:  first, control voltage at 88 V until current drops
+        //      to below 1 Amp.  Then, raise voltage to bring current to 2 Amps
+        //      for one hour.
+        getAnalog(); // populate sensor readings
+
+        if(debug==true) {
+            // shows analog pin value and real stack voltage (estimated)
+            printf("\nDivided Stack Voltage Reading: %5.2f V\n", Battery_volt);
+            double realStack = Battery_volt * 88.0 / maxStackV;
+            printf("Corresponds to real voltage: %5.2f V\n", realStack);
+        }
+
+        // temperature control logic, only if flag is enabled
+        if(tempControlOn == true) {
+            if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
+                    temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
+                shift = shift - 20;
+
+                // safety control; keep shift at 0 if it tries to go lower
+                if( shift < 0)
+                    shift = 0;
+
+                if(debug == true)
+                    printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
+
+                // write value to DAC Vout register
+                SendI2C3(DAC,0b00000000,shift);
+            }
+        }
+
+        // control current to get to 10 Amps
         CurrentControl();
-//        SendI2CGen(0b00000000);
+
+        // TO-DO:  current will fluctuate (trend down) over time.  Write logic
+        //      to utilize this fact.
+
+        // if stack voltage is maxed
+        if(Battery_volt == maxStackV) {
+            
+        }
 }
 
 // Configure bits for Timer operation
@@ -230,11 +278,6 @@ void getAnalog()
         // wait for the first conversion to complete so there
         // will be vaild data in ADC result registers
     }
-    // Reads the buffer that is not being populated
-    // (we don't want to read the active buffer)
-    //       determine which buffer is idle and create an offset
-//    offset = 16 * ((~ReadActiveBufferADC10() & 0x01));
-
     Csensor_volt = ReadADC10(12)*.003185; // pin 12 (APPEARS BROKEN)
     Battery_volt = ReadADC10(7)*.003185;  // pin 7
 
@@ -436,85 +479,63 @@ char ParseThird()
 // Control voltage sent to DAC as a function of Csensor_volt read from current sensor
 void CurrentControl()
 {
-    double current;
     // current control bounds, in Amps
-    double highBound = 1.2;
-    double lowBound = 0.8;
+    double highBound = 10.0;
+    double lowBound = 9.5;
 
-    // temperature control
-    if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
-            temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
-        isCharging = 0;
-        shift = 0;
+    // Gets values for Csensor_volt and Battery_volt
+    getAnalog();
+
+    // settles DAC output if current is around 0, or goes through process
+    if(Csensor_volt <= 2.53 && Csensor_volt >= 2.47) {
+        shift = 50;
         if(debug == true)
-            printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
-
-        // write value to DAC Vout register
-        SendI2C3(DAC,0b00000000,shift);
+            printf("\nCurrent sensor at 0, holding at shift=50...\n");
     }
     else {
-        // Gets values for Csensor_volt and Battery_volt
-        getAnalog();
+        // Current should be between lowBound and highBound at all times for safety
+        if(current <= lowBound)
+        {
+            // if current is less than lowBound, increase DAC value
+            shift = shift + 1;
 
-        // linear fit conversion from voltage to current
-        // TO-DO:  needs more work
-        current = abs(10*(1.482*Csensor_volt - 3.7085));
+            // safety control; keep shift at 255 (max) if it tries to go higher
+            if(shift > 255)
+                shift = 255;
 
-        // settles DAC output if current is around 0, or goes through process
-        if(Csensor_volt <= 2.53 && Csensor_volt >= 2.47) {
-            shift = 50;
-            if(debug == true)
-                printf("\nCurrent sensor at 0, holding at shift=50...\n");
+            // Output to UART in text
+            if(debug == true) {
+                printf("\nShifting up; shift is: %3d\n", shift);
+                printf("Current is: %3.2f A\n", current);
+                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+            }
+
+
+            // write value to DAC Vout register
+            SendI2C3(DAC,0b00000000,shift);
         }
-        else {
-            // Current should be between lowBound and highBound at all times for safety
-            if(current <= lowBound)
-            {
-                isCharging = 1;
+        else if(current > highBound)
+        {
+            // if current is more than highBound, decrease DAC value
+            shift = shift - 1;
 
-                // if current is less than lowBound, increase DAC value
-                shift = shift + 1;
+            // safety control; keep shift at 0 if it tries to go lower
+            if( shift < 0)
+                shift = 0;
 
-                // safety control; keep shift at 255 (max) if it tries to go higher
-                if(shift > 255)
-                    shift = 255;
-
-                // Output to UART in text
-                if(debug == true) {
-                    printf("\nShifting up; shift is: %3d\n", shift);
-                    printf("Current is: %3.2f A\n", current);
-                    printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                    printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                    printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
-                }
-
-
-                // write value to DAC Vout register
-                SendI2C3(DAC,0b00000000,shift);
+            // Output to UART in text
+            if(debug == true) {
+                printf("\nShifting down; shift is: %3d\n", shift);
+                printf("Current is: %3.2f A\n", current);
+                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
             }
-            else if(current > highBound)
-            {
-                isCharging = 1;
 
-                // if current is more than highBound, decrease DAC value
-                shift = shift - 1;
-
-                // safety control; keep shift at 0 if it tries to go lower
-                if( shift < 0)
-                    shift = 0;
-
-                // Output to UART in text
-                if(debug == true) {
-                    printf("\nShifting down; shift is: %3d\n", shift);
-                    printf("Current is: %3.2f A\n", current);
-                    printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                    printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                    printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
-                }
-
-                // write value to DAC Vout register
-                SendI2C3(DAC,0b00000000,shift);
-            }
+            // write value to DAC Vout register
+            SendI2C3(DAC,0b00000000,shift);
         }
     }
 }
