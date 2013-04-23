@@ -18,7 +18,7 @@
  *
  * Created on November 26, 2012, 8:26 PM
  *
- * Last Modified:  April 17, 2013
+ * Last Modified:  April 23, 2013
  */
 
 #include <stdio.h>
@@ -75,6 +75,12 @@
 #define EQUAL 0x3D
 #define DECIMAL 0x2E
 
+ #define true 1
+ #define false 0
+
+// boolean to set debug (UART out or not)
+int debug = true;
+
 // voltage reading from current sensor; global variable
 double Csensor_volt=0;
 double Battery_volt=0;
@@ -119,6 +125,9 @@ int main(int argc, char** argv) {
     ConfigAnalog();
     // I2C Config
     ConfigI2C();
+
+    // disable JTAG so pin 12 can be used
+    DPCONbits.JTAGEN = 0;
 
     // Configure output ports
     TRISE = 0;
@@ -204,7 +213,7 @@ void ConfigAnalog()
     // do not assign channels to scan
     #define PARAM5  0
 
-    // configure all analog pins to read in
+    // configure all analog pins to read in (using sample A)
     SetChanADC10(ADC_CH0_NEG_SAMPLEA_NVREF);
     // configure ADC using the parameters defined above
     OpenADC10( PARAM1, PARAM2, PARAM3, PARAM4, PARAM5 );
@@ -437,7 +446,8 @@ void CurrentControl()
             temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
         isCharging = 0;
         shift = 0;
-        printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
+        if(debug == true)
+            printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
 
         // write value to DAC Vout register
         SendI2C3(DAC,0b00000000,shift);
@@ -453,7 +463,8 @@ void CurrentControl()
         // settles DAC output if current is around 0, or goes through process
         if(Csensor_volt <= 2.53 && Csensor_volt >= 2.47) {
             shift = 50;
-            printf("\nCurrent sensor at 0, holding at shift=50...\n");
+            if(debug == true)
+                printf("\nCurrent sensor at 0, holding at shift=50...\n");
         }
         else {
             // Current should be between lowBound and highBound at all times for safety
@@ -469,11 +480,14 @@ void CurrentControl()
                     shift = 255;
 
                 // Output to UART in text
-                printf("\nShifting up; shift is: %3d\n", shift);
-                printf("Current is: %3.2f A\n", current);
-                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+                if(debug == true) {
+                    printf("\nShifting up; shift is: %3d\n", shift);
+                    printf("Current is: %3.2f A\n", current);
+                    printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                    printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                    printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+                }
+
 
                 // write value to DAC Vout register
                 SendI2C3(DAC,0b00000000,shift);
@@ -490,11 +504,13 @@ void CurrentControl()
                     shift = 0;
 
                 // Output to UART in text
-                printf("\nShifting down; shift is: %3d\n", shift);
-                printf("Current is: %3.2f A\n", current);
-                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+                if(debug == true) {
+                    printf("\nShifting down; shift is: %3d\n", shift);
+                    printf("Current is: %3.2f A\n", current);
+                    printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+                    printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
+                    printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
+                }
 
                 // write value to DAC Vout register
                 SendI2C3(DAC,0b00000000,shift);
@@ -513,10 +529,12 @@ void updateTemps() {
     temp6 = vt6 * 100.0;
 
     // print temps to UART
-    printf("\nTemp1: %3.2f C\n", temp1);
-    printf("Temp2: %3.2f C\n", temp2);
-    printf("Temp3: %3.2f C\n", temp3);
-    printf("Temp4: %3.2f C\n", temp4);
-    printf("Temp5: %3.2f C\n", temp5);
-    printf("Temp6: %3.2f C\n", temp6);
+    if(debug == true) {
+        printf("\nTemp1: %3.2f C\n", temp1);
+        printf("Temp2: %3.2f C\n", temp2);
+        printf("Temp3: %3.2f C\n", temp3);
+        printf("Temp4: %3.2f C\n", temp4);
+        printf("Temp5: %3.2f C\n", temp5);
+        printf("Temp6: %3.2f C\n", temp6);
+    }
 }
