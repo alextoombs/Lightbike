@@ -18,7 +18,7 @@
  *
  * Created on November 26, 2012, 8:26 PM
  *
- * Last Modified:  April 23, 2013
+ * Last Modified:  April 27, 2013
  */
 
 #include <stdio.h>
@@ -80,9 +80,8 @@
 
 // boolean to set debug (UART out or not)
 int debug = true;
-
 // boolean to set temp control
-int tempControlOn = true;
+int tempControlOn = false;
 
 // voltage reading from current sensor; global variable
 double Csensor_volt=0;
@@ -92,15 +91,23 @@ double Battery_volt=0;
 double current = 0;
 
 // max rating (in volts) through A7 if stack is at 88 V
-double maxStackV = 2.73;
-
+double maxStackRead = 2.73;
+// real stack voltage converted up
+double realStack = 0;
 // MOSFET voltage
 double mosVolt = 0;
 
-unsigned int offset;
+// max current allowed into battery, Amps.  Critical limit to stay under
+double maxCurrent = 9.0;
+// max voltage across stack, Volts.  Generous window
+double maxVoltage = 88.0;
 
-// offset to adjust the DAC value
-int shift = 51;
+// offset to adjust the DAC
+//      "shift" is the value written to the DAC, which is off the gate of the
+//      array of power MOSFETs.  Lowering "shift" decreases the current allowed
+//      through the MOSFET and thus the battery stack that the FET is in
+//      series with.
+int shift = 20;
 
 // read-in voltages from temperature sensors, in Volts
 double vt1 = 0;
@@ -119,10 +126,15 @@ double temp5;
 double temp6;
 
 // battery temp limit, in degrees C
-static double tempLimit = 51;
+static double tempLimit = 50.0;
 
-// double timer to control 1 hour @ 2 Amp charging routine; 120 => been 1 hour
-double finChargeTime = 0;
+// int timer to control 1 hour @ 2 Amp charging routine; 120 => been 1 hour
+int trickleTimer = 0;
+
+// boolean to determine if full charge (to current < 1.0 A) is done
+int isFullDone = false;
+// boolean to determine if charge is totally done
+int isChargeDone = false;
 
 // Loops continuously to adjust current source output
 int main(int argc, char** argv) {
@@ -141,81 +153,98 @@ int main(int argc, char** argv) {
     // Configure output ports
     TRISE = 0;
     LATE = 0xFF;
-      
-    // run continously to keep program running
-    while(1)
+
+    // run until charge routine is done
+    while(!isChargeDone)
     {
+
     }
     return (EXIT_SUCCESS);
 }
 
-// Configure timer to interrupt every 0.5 seconds
+// Interrupt fires every half second
 void __ISR(8, IPL3AUTO) Timer2Hand(void)
 {
-        INTClearFlag(INT_T2);
-        if(debug==true) {
-            // Display current voltage reading from analog pin B12 on LCD
-            SendI2C3(LED,LEDREG,LEDCLR);
-            SendI2C2(LED,V);
-            SendI2C2(LED,O);
-            SendI2C2(LED,L);
-            SendI2C2(LED,T);
-            SendI2C2(LED,A);
-            SendI2C2(LED,G);
-            SendI2C2(LED,E);
-            SendI2C2(LED,COLON);
-            SendI2C3(LED,LEDREG,LEDRIGHT);
-            SendI2C2(LED,ParseFirst());
-            SendI2C2(LED,DECIMAL);
-            SendI2C2(LED,ParseSecond());
-            SendI2C2(LED,ParseThird());
-            SendI2C3(LED, LEDREG, LEDRIGHT);
-            SendI2C2(LED,V);
+    INTClearFlag(INT_T2);
+    if(debug==true) {
+        // Display current voltage reading from analog pin B12 on LCD
+        SendI2C3(LED,LEDREG,LEDCLR);
+        SendI2C2(LED,V);
+        SendI2C2(LED,O);
+        SendI2C2(LED,L);
+        SendI2C2(LED,T);
+        SendI2C2(LED,A);
+        SendI2C2(LED,G);
+        SendI2C2(LED,E);
+        SendI2C2(LED,COLON);
+        SendI2C3(LED,LEDREG,LEDRIGHT);
+        SendI2C2(LED,ParseFirst());
+        SendI2C2(LED,DECIMAL);
+        SendI2C2(LED,ParseSecond());
+        SendI2C2(LED,ParseThird());
+        SendI2C3(LED, LEDREG, LEDRIGHT);
+        SendI2C2(LED,V);
+    }
+
+    // update temperature sensor values from battery
+    updateTemps();
+
+    // populate sensor readings, update values
+    getAnalog();
+    updateValues();
+
+    if(debug==true) {
+        // show values (estimated)
+        printf("\nDivided Stack Voltage Reading: %5.2f V\n", Battery_volt);
+        printf("Corresponds to real voltage: %5.2f V\n", realStack);
+        printf("Estimated current is: %5.2f A\n", current);
+        printf("MOSFET voltage is: %5.2f V\n", mosVolt);
+    }
+
+    // Shuts down charger entirely if temperatures get too hot.
+    if(tempControlOn == true) {
+        printf("\nTemperature control is on...\n");
+        if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
+                temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
+            shift = 0;
+
+            writeToDAC();
+        }
+    }
+    else {
+        if(debug == true)
+            printf("\nWARNING:  Temperature control is OFF!\n");
+    }
+
+    // when stack voltage is low but current isn't low, keep doing full charge
+    if(realStack < maxVoltage || current > 1.0) {
+        fullCharge();
+        if(debug == true)
+            printf("\nDoing full charge routine");
+    }
+    // when stack is high AND current is low, it's time to trickle charge!
+    else if(realStack >= maxVoltage - 2.0 && current < 1.0) {
+        isFullDone = true;
+
+        trickleTimer = trickleTimer + 1;
+
+        trickleCharge();
+        if(debug == true)
+            printf("\nTrickle charging");
+    }
+
+    // if trickleCharge runs for 1 hour (currently 120 ISRs), charge is done.
+    if(trickleTimer >= 120) {
+        shift = 0;
+        writeToDAC();
+
+        isChargeDone = true;
+        if(debug == true) {
+            printf("\nCharging routine is done!\n");
         }
 
-        // update temperature sensor values from battery
-        updateTemps();
-
-        // charging logic:  first, control voltage at 88 V until current drops
-        //      to below 1 Amp.  Then, raise voltage to bring current to 2 Amps
-        //      for one hour.
-        getAnalog(); // populate sensor readings
-
-        if(debug==true) {
-            // shows analog pin value and real stack voltage (estimated)
-            printf("\nDivided Stack Voltage Reading: %5.2f V\n", Battery_volt);
-            double realStack = Battery_volt * 88.0 / maxStackV;
-            printf("Corresponds to real voltage: %5.2f V\n", realStack);
-        }
-
-        // temperature control logic, only if flag is enabled
-        if(tempControlOn == true) {
-            if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
-                    temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
-                shift = shift - 20;
-
-                // safety control; keep shift at 0 if it tries to go lower
-                if( shift < 0)
-                    shift = 0;
-
-                if(debug == true)
-                    printf("\nBATTERIES ARE TOO HOT, STOPPING CHARGING\n");
-
-                // write value to DAC Vout register
-                SendI2C3(DAC,0b00000000,shift);
-            }
-        }
-
-        // control current to get to 10 Amps
-        CurrentControl();
-
-        // TO-DO:  current will fluctuate (trend down) over time.  Write logic
-        //      to utilize this fact.
-
-        // if stack voltage is maxed
-        if(Battery_volt == maxStackV) {
-            
-        }
+        // TO-DO:  logic to output charge is done to LCD display
+    }
 }
 
 // Configure bits for Timer operation
@@ -358,9 +387,9 @@ void mAckI2C1(void)
 // Check for lack of acknowledgement
 void mNAckI2C1(void)
 {
-I2C1CONbits.ACKDT=1;
-I2C1CONbits.ACKEN=1;
-while(I2C1CONbits.ACKEN){}
+    I2C1CONbits.ACKDT=1;
+    I2C1CONbits.ACKEN=1;
+    while(I2C1CONbits.ACKEN){}
 }
 
 // Read data back from I2C line
@@ -476,68 +505,77 @@ char ParseThird()
         return NINE;
 }
 
-// Control voltage sent to DAC as a function of Csensor_volt read from current sensor
-void CurrentControl()
+// Charge full stack of batteries from zero until they can be used.
+//    Operating conditions:  82.8V to 90V whole stack, current < 10A (fuse)
+//    For full charge, voltage must be controlled at ~88V
+void fullCharge()
 {
-    // current control bounds, in Amps
-    double highBound = 10.0;
-    double lowBound = 9.5;
+    if(current >= maxCurrent) {
+        // constrict MOSFET output by 5 if current gets too high
+        shift = shift - 5;
 
-    // Gets values for Csensor_volt and Battery_volt
-    getAnalog();
+        if(debug == true) {
+            printf("\nWARNING:  CURRENT IS AT/ABOVE LIMIT!");
+            printf("Shifting down by 5!\n");
+        }
+        writeToDAC();
+    }
+    else if(realStack < maxVoltage && current < maxCurrent) {
+        // increment DAC out value by 1 if stack voltage is too low
+        shift = shift + 1;
 
-    // settles DAC output if current is around 0, or goes through process
-    if(Csensor_volt <= 2.53 && Csensor_volt >= 2.47) {
-        shift = 50;
-        if(debug == true)
-            printf("\nCurrent sensor at 0, holding at shift=50...\n");
+        // Output to UART in text
+        if(debug == true) {
+            printf("\nShifting up...");
+        }
+        writeToDAC();
+    }
+    else if(realStack > maxVoltage && current < maxCurrent) {
+        // decrease DAC out value by 1 if stack voltage is too high
+        shift = shift - 1;
+        
+        // Output to UART in text
+        if(debug == true) {
+            printf("\nShifting down...");
+        }
+        writeToDAC();
+    }
+}
+
+// Last hour of charge should control current @ 2A
+void trickleCharge() {
+    double trickleCurrent = 2.0;
+
+    if(current < trickleCurrent) {
+        // increase DAC out value by 1 to push it closer to required current
+        shift = shift + 1;
+        writeToDAC();
+    }
+    else if(current > trickleCurrent) {
+        // decrease DAC out value by 1 if current gets too high
+        shift = shift - 1;
+        writeToDAC();
     }
     else {
-        // Current should be between lowBound and highBound at all times for safety
-        if(current <= lowBound)
-        {
-            // if current is less than lowBound, increase DAC value
-            shift = shift + 1;
-
-            // safety control; keep shift at 255 (max) if it tries to go higher
-            if(shift > 255)
-                shift = 255;
-
-            // Output to UART in text
-            if(debug == true) {
-                printf("\nShifting up; shift is: %3d\n", shift);
-                printf("Current is: %3.2f A\n", current);
-                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
-            }
-
-
-            // write value to DAC Vout register
-            SendI2C3(DAC,0b00000000,shift);
-        }
-        else if(current > highBound)
-        {
-            // if current is more than highBound, decrease DAC value
-            shift = shift - 1;
-
-            // safety control; keep shift at 0 if it tries to go lower
-            if( shift < 0)
-                shift = 0;
-
-            // Output to UART in text
-            if(debug == true) {
-                printf("\nShifting down; shift is: %3d\n", shift);
-                printf("Current is: %3.2f A\n", current);
-                printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
-                printf("Voltage Reading is: %5.2f V\n", Csensor_volt);
-                printf("Voltage 2 Reading is: %5.2f V\n", Battery_volt);
-            }
-
-            // write value to DAC Vout register
-            SendI2C3(DAC,0b00000000,shift);
-        }
+        // hold current DAC value at 2 Amps; shift stays constant
     }
+}
+
+// Constrict value of shift to 8 bits, 0 through 255
+void shiftSafety() {
+    if(shift >= 255)
+        shift = 255;
+    else if(shift <= 0)
+        shift = 0;
+}
+
+// update variables that store current/voltage
+void updateValues() {
+    // linear fit conversion from voltage to current
+    //      Needs more work, probably
+    current = abs(10*(1.482*Csensor_volt - 3.7085));
+    // estimated voltage divider conversion from analog pin read in
+    realStack = Battery_volt * 88.0 / maxStackRead;
 }
 
 // updates temperatures of battery stack
@@ -558,4 +596,19 @@ void updateTemps() {
         printf("Temp5: %3.2f C\n", temp5);
         printf("Temp6: %3.2f C\n", temp6);
     }
+}
+
+// Write value of shift to DAC output register, controlling shift value as 8 bits
+void writeToDAC() {
+    if(debug == true) {
+        printf("Writing shift value of: %3d\n", shift);
+        printf("Calc. Current is: %3.2f A\n", current);
+        printf("Estimated DAC Output voltage is: %5.3f V\n", 5.00/255.0 * shift);
+        printf("Current Sensor Reading is: %5.2f V\n", Csensor_volt);
+        printf("Stack Voltage Reading is: %5.2f V\n", Battery_volt);
+    }
+
+    shiftSafety();
+    // write value to DAC Vout register
+    SendI2C3(DAC,0b00000000,shift);
 }
