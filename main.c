@@ -59,6 +59,7 @@
 #define LED 0x50
 #define LEDREG 0xFE
 #define DAC 0xC0
+#define DACOUT 0x00
 #define LEDCLR 0x51
 #define LEDRIGHT 0x4A
 #define ZERO 0x30
@@ -75,11 +76,16 @@
 #define EQUAL 0x3D
 #define DECIMAL 0x2E
 
+#define LINEONE 0x00
+#define LINETWO 0x40
+#define LINETHREE 0x14
+#define LINEFOUR 0x54
+
  #define true 1
  #define false 0
 
 // boolean to set debug (UART out or not)
-int debug = true;
+int debug = false;
 // boolean to set temp control
 int tempControlOn = false;
 
@@ -150,14 +156,9 @@ int main(int argc, char** argv) {
     // disable JTAG so pin 12 can be used
     DDPCONbits.JTAGEN = 0;
 
-    // Configure output ports
-    TRISE = 0;
-    LATE = 0xFF;
-
     // run until charge routine is done
-    while(!isChargeDone)
+    while(1)
     {
-
     }
     return (EXIT_SUCCESS);
 }
@@ -166,25 +167,53 @@ int main(int argc, char** argv) {
 void __ISR(8, IPL3AUTO) Timer2Hand(void)
 {
     INTClearFlag(INT_T2);
-    if(debug==true) {
-        // Display current voltage reading from analog pin B12 on LCD
-        SendI2C3(LED,LEDREG,LEDCLR);
-        SendI2C2(LED,V);
-        SendI2C2(LED,O);
-        SendI2C2(LED,L);
-        SendI2C2(LED,T);
-        SendI2C2(LED,A);
-        SendI2C2(LED,G);
-        SendI2C2(LED,E);
-        SendI2C2(LED,COLON);
-        SendI2C3(LED,LEDREG,LEDRIGHT);
-        SendI2C2(LED,ParseFirst());
-        SendI2C2(LED,DECIMAL);
-        SendI2C2(LED,ParseSecond());
-        SendI2C2(LED,ParseThird());
-        SendI2C3(LED, LEDREG, LEDRIGHT);
-        SendI2C2(LED,V);
-    }
+    // Display shift value on LCD
+    SendI2C3(LED,LEDREG,LEDCLR);
+    SendI2C2(LED,S);
+    SendI2C2(LED,H);
+    SendI2C2(LED,I);
+    SendI2C2(LED,F);
+    SendI2C2(LED,T);
+    SendI2C2(LED,COLON);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,ParseFirstShift());
+    SendI2C2(LED,DECIMAL);   
+    SendI2C2(LED,ParseSecondShift());
+    SendI2C2(LED,ParseThirdShift());
+
+    // Display current sensor reading on line two
+    SendI2C3(LED,LEDREG,LEDCLR);
+    SendI2C3(LED,LEDREG,LINETWO);
+    SendI2C2(LED,C);
+    SendI2C2(LED,V);
+    SendI2C2(LED,O);
+    SendI2C2(LED,L);
+    SendI2C2(LED,T);
+    SendI2C2(LED,COLON);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,ParseFirst(Csensor_volt));
+    SendI2C2(LED,DECIMAL);
+    SendI2C2(LED,ParseSecond(Csensor_volt));
+    SendI2C2(LED,ParseThird(Csensor_volt));
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,V);
+
+    // Display battery stack reading on line three
+    SendI2C3(LED,LEDREG,LEDCLR);
+    SendI2C3(LED,LEDREG,LINETHREE);
+    SendI2C2(LED,B);
+    SendI2C2(LED,V);
+    SendI2C2(LED,O);
+    SendI2C2(LED,L);
+    SendI2C2(LED,T);
+    SendI2C2(LED,COLON);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,ParseFirst(Battery_volt));
+    SendI2C2(LED,DECIMAL);
+    SendI2C2(LED,ParseSecond(Battery_volt));
+    SendI2C2(LED,ParseThird(Battery_volt));
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,V);
 
     // update temperature sensor values from battery
     updateTemps();
@@ -442,69 +471,6 @@ void SendI2C2(char addrs, char data)
     I2C_stop();
 }
 
-// Parse first digit (ones place) of Csensor_volt for printing to LCD
-char ParseFirst()
-{
-    if(Csensor_volt<1)
-        return ZERO;
-    if(Csensor_volt<2)
-        return ONE;
-    if(Csensor_volt<3)
-        return TWO;
-    if(Csensor_volt<4)
-        return THREE;
-}
-
-// Parse second digit (tenth place) of Csensor_volt for printing to LCD
-char ParseSecond()
-{
-   if(fmod(Csensor_volt*10,10.0)<1)
-        return ZERO;
-    if(fmod(Csensor_volt*10,10.0)<2)
-        return ONE;
-    if(fmod(Csensor_volt*10,10.0)<3)
-        return TWO;
-    if(fmod(Csensor_volt*10,10.0)<4)
-        return THREE;
-    if(fmod(Csensor_volt*10,10.0)<5)
-        return FOUR;
-    if(fmod(Csensor_volt*10,10.0)<6)
-        return FIVE;
-    if(fmod(Csensor_volt*10,10.0)<7)
-        return SIX;
-    if(fmod(Csensor_volt*10,10.0)<8)
-        return SEVEN;
-    if(fmod(Csensor_volt*10,10.0)<9)
-        return EIGHT;
-    if(fmod(Csensor_volt*10,10.0)<10)
-        return NINE;
-}
-
-// Parse third digit (hundredths place) of Csensor_volt for LCD outputting
-char ParseThird()
-{
-   if(fmod(Csensor_volt*100,10.0)<1)
-        return ZERO;
-    if(fmod(Csensor_volt*100,10.0)<2)
-        return ONE;
-    if(fmod(Csensor_volt*100,10.0)<3)
-        return TWO;
-    if(fmod(Csensor_volt*100,10.0)<4)
-        return THREE;
-    if(fmod(Csensor_volt*100,10.0)<5)
-        return FOUR;
-    if(fmod(Csensor_volt*100,10.0)<6)
-        return FIVE;
-    if(fmod(Csensor_volt*100,10.0)<7)
-        return SIX;
-    if(fmod(Csensor_volt*100,10.0)<8)
-        return SEVEN;
-    if(fmod(Csensor_volt*100,10.0)<9)
-        return EIGHT;
-    if(fmod(Csensor_volt*100,10.0)<10)
-        return NINE;
-}
-
 // Charge full stack of batteries from zero until they can be used.
 //    Operating conditions:  82.8V to 90V whole stack, current < 10A (fuse)
 //    For full charge, voltage must be controlled at ~88V
@@ -610,5 +576,127 @@ void writeToDAC() {
 
     shiftSafety();
     // write value to DAC Vout register
-    SendI2C3(DAC,0b00000000,shift);
+    SendI2C3(DAC,DACOUT,shift);
+}
+
+
+// Parse first digit (ones place) of input double  for printing to LCD
+char ParseFirst(double in)
+{
+    if(in<1)
+        return ZERO;
+    if(in<2)
+        return ONE;
+    if(in<3)
+        return TWO;
+    if(in<4)
+        return THREE;
+}
+
+// Parse second digit (tenth place) of input double for printing to LCD
+char ParseSecond(double in)
+{
+   if(fmod(in*10,10.0)<1)
+        return ZERO;
+    if(fmod(in*10,10.0)<2)
+        return ONE;
+    if(fmod(in*10,10.0)<3)
+        return TWO;
+    if(fmod(in*10,10.0)<4)
+        return THREE;
+    if(fmod(in*10,10.0)<5)
+        return FOUR;
+    if(fmod(in*10,10.0)<6)
+        return FIVE;
+    if(fmod(in*10,10.0)<7)
+        return SIX;
+    if(fmod(in*10,10.0)<8)
+        return SEVEN;
+    if(fmod(in*10,10.0)<9)
+        return EIGHT;
+    if(fmod(in*10,10.0)<10)
+        return NINE;
+}
+
+// Parse third digit (hundredths place) of input double for LCD outputting
+char ParseThird(double in)
+{
+   if(fmod(in*100,10.0)<1)
+        return ZERO;
+    if(fmod(in*100,10.0)<2)
+        return ONE;
+    if(fmod(in*100,10.0)<3)
+        return TWO;
+    if(fmod(in*100,10.0)<4)
+        return THREE;
+    if(fmod(in*100,10.0)<5)
+        return FOUR;
+    if(fmod(in*100,10.0)<6)
+        return FIVE;
+    if(fmod(in*100,10.0)<7)
+        return SIX;
+    if(fmod(in*100,10.0)<8)
+        return SEVEN;
+    if(fmod(in*100,10.0)<9)
+        return EIGHT;
+    if(fmod(in*100,10.0)<10)
+        return NINE;
+}
+
+// Parse the hundreds place of the integer shift for display
+char ParseFirstShift() {
+    if(fmod(shift/100,10)<1)
+        return ZERO;
+    else if(fmod(shift/100,10)<2)
+        return ONE;
+    else
+        return TWO;
+}
+
+// Parse the tenths place of the integer shift for display
+char ParseSecondShift() {
+    if(fmod(shift/10,10)<1)
+        return ZERO;
+    else if(fmod(shift/10,10)<2)
+        return ONE;
+    else if(fmod(shift/10,10)<3)
+        return TWO;
+    else if(fmod(shift/10,10)<4)
+        return THREE;
+    else if(fmod(shift/10,10)<5)
+        return FOUR;
+    else if(fmod(shift/10,10)<6)
+        return FIVE;
+    else if(fmod(shift/10,10)<7)
+        return SIX;
+    else if(fmod(shift/10,10)<8)
+        return SEVEN;
+    else if(fmod(shift/10,10)<9)
+        return EIGHT;
+    else
+        return NINE;
+}
+
+// Parse the ones place of the integer shift for display
+char ParseThirdShift() {
+    if(fmod(shift,10)<1)
+        return ZERO;
+    else if(fmod(shift,10)<2)
+        return ONE;
+    else if(fmod(shift,10)<3)
+        return TWO;
+    else if(fmod(shift,10)<4)
+        return THREE;
+    else if(fmod(shift,10)<5)
+        return FOUR;
+    else if(fmod(shift,10)<6)
+        return FIVE;
+    else if(fmod(shift,10)<7)
+        return SIX;
+    else if(fmod(shift,10)<8)
+        return SEVEN;
+    else if(fmod(shift,10)<9)
+        return EIGHT;
+    else
+        return NINE;
 }

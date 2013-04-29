@@ -23,15 +23,9 @@
 #pragma config FSOSCEN = OFF // Secondary oscillator enable
 /* Clock control settings
 */
-#pragma config IESO = OFF // Internal/external clock switchover
+#pragma config IESO = ON // Internal/external clock switchover
 #pragma config FCKSM = CSDCMD // Clock switching (CSx)/Clock monitor (CMx)
 #pragma config OSCIOFNC = OFF // Clock output on OSCO pin enable
-/* USB Settings
-*/
-#pragma config UPLLEN = ON // USB PLL enable
-#pragma config UPLLIDIV = DIV_2 // USB PLL input divider
-#pragma config FVBUSONIO = OFF // VBUS pin control
-#pragma config FUSBIDIO = OFF // USBID pin control
 /* Other Peripheral Device settings
 */
 #pragma config FWDTEN = OFF // Watchdog timer enable

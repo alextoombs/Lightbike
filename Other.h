@@ -28,10 +28,6 @@ int I2C_writeDAC(int data);
 void mAckI2C1(void);
 void mNAckI2C1(void);
 
-char ParseFirst();
-char ParseSecond();
-char ParseThird();
-
 char I2C_read(char ack);
 void I2C_idle();
 void SendI2C3(char addrs, char regis, char data);
@@ -44,6 +40,14 @@ void shiftSafety();
 void updateValues();
 void updateTemps();
 void writeToDAC();
+
+char ParseFirst(double in);
+char ParseSecond(double in);
+char ParseThird(double in);
+
+char ParseFirstShift();
+char ParseSecondShift();
+char ParseThirdShift();
 
 #ifdef	__cplusplus
 }
