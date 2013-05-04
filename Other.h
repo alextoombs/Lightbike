@@ -41,6 +41,7 @@ void updateValues();
 void updateTemps();
 void writeToDAC();
 
+char ParseTens(double in);
 char ParseFirst(double in);
 char ParseSecond(double in);
 char ParseThird(double in);

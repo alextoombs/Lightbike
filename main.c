@@ -9,6 +9,17 @@
  * Main file for program to read voltage from current sensor and adjust current
  *      sourced to battery accordingly, using I2C to communicate with MCP
  *      4706DAC.
+ * Notre Dame Senior Design 2013
+ * Lightbike Group
+ *
+ * LED Status Codes:
+ * (excludes LED on RE0, status to peripheral board)
+ * (1 is high)      RE3   RE1   RE2    RE0
+ * State            Top LED      Bottom LED
+ *  10 Amp charge   0     0     0     1
+ *  High Temp       0     0     1     1
+ *  Trickle charge  0     1     0     1
+ *  Charge done     1     0     0     1
  *
  * Analog pinout on board:
  *      A12:  Current Sensor
@@ -18,7 +29,7 @@
  *
  * Created on November 26, 2012, 8:26 PM
  *
- * Last Modified:  April 27, 2013
+ * Last Modified:  May 3, 2013
  */
 
 #include <stdio.h>
@@ -76,13 +87,8 @@
 #define EQUAL 0x3D
 #define DECIMAL 0x2E
 
-#define LINEONE 0x00
-#define LINETWO 0x40
-#define LINETHREE 0x14
-#define LINEFOUR 0x54
-
- #define true 1
- #define false 0
+#define true 1
+#define false 0
 
 // boolean to set debug (UART out or not)
 int debug = false;
@@ -96,17 +102,22 @@ double Battery_volt=0;
 // current through stack
 double current = 0;
 
-// max rating (in volts) through A7 if stack is at 88 V
-double maxStackRead = 2.73;
 // real stack voltage converted up
 double realStack = 0;
 // MOSFET voltage
 double mosVolt = 0;
+// real-world mosfet voltage
+double realMos = 0;
+
+// should hopefully be real battery voltage
+double realBatt = 0;
 
 // max current allowed into battery, Amps.  Critical limit to stay under
-double maxCurrent = 9.0;
-// max voltage across stack, Volts.  Generous window
-double maxVoltage = 88.0;
+double maxCurrent = 8.0;
+
+// max voltage across stack, Volts, if 15 V per battery limit
+//double maxVoltage = 90;
+double maxVoltage = 24.04;
 
 // offset to adjust the DAC
 //      "shift" is the value written to the DAC, which is off the gate of the
@@ -134,13 +145,17 @@ double temp6;
 // battery temp limit, in degrees C
 static double tempLimit = 50.0;
 
-// int timer to control 1 hour @ 2 Amp charging routine; 120 => been 1 hour
+// int timer to control 1 hour @ 2 Amp charging routine
 int trickleTimer = 0;
+// timer to control delay at beginning of charge before entering full charge state
+int delayTimer = 0;
 
 // boolean to determine if full charge (to current < 1.0 A) is done
-int isFullDone = false;
+int isHighCurrentDone = false;
 // boolean to determine if charge is totally done
-int isChargeDone = false;
+int isTrickleDone = false;
+// boolean to determine if batteries are too hot
+int isTooHot = false;
 
 // Loops continuously to adjust current source output
 int main(int argc, char** argv) {
@@ -150,11 +165,20 @@ int main(int argc, char** argv) {
     ConfigTime();
     // Analog Config pin B7
     ConfigAnalog();
-    // I2C Config
+    // I2C Config 
     ConfigI2C();
+    
+    TRISEbits.TRISE3=0;
+    LATEbits.LATE3=0;
 
-    // disable JTAG so pin 12 can be used
-    DDPCONbits.JTAGEN = 0;
+    TRISEbits.TRISE2=0;
+    LATEbits.LATE2=0;
+
+    TRISEbits.TRISE1=0;
+    LATEbits.LATE1=0;
+
+    TRISEbits.TRISE0=0;
+    LATEbits.LATE0=1;
 
     // run until charge routine is done
     while(1)
@@ -177,50 +201,86 @@ void __ISR(8, IPL3AUTO) Timer2Hand(void)
     SendI2C2(LED,COLON);
     SendI2C3(LED,LEDREG,LEDRIGHT);
     SendI2C2(LED,ParseFirstShift());
-    SendI2C2(LED,DECIMAL);   
     SendI2C2(LED,ParseSecondShift());
     SendI2C2(LED,ParseThirdShift());
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
 
     // Display current sensor reading on line two
-    SendI2C3(LED,LEDREG,LEDCLR);
-    SendI2C3(LED,LEDREG,LINETWO);
     SendI2C2(LED,C);
-    SendI2C2(LED,V);
-    SendI2C2(LED,O);
-    SendI2C2(LED,L);
-    SendI2C2(LED,T);
+    SendI2C2(LED,U);
+    SendI2C2(LED,R);
+    SendI2C2(LED,R);
     SendI2C2(LED,COLON);
     SendI2C3(LED,LEDREG,LEDRIGHT);
-    SendI2C2(LED,ParseFirst(Csensor_volt));
+    SendI2C2(LED,ParseTens(current));
+    SendI2C2(LED,ParseFirst(current));
     SendI2C2(LED,DECIMAL);
-    SendI2C2(LED,ParseSecond(Csensor_volt));
-    SendI2C2(LED,ParseThird(Csensor_volt));
+    SendI2C2(LED,ParseSecond(current));
+    SendI2C2(LED,ParseThird(current));
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,A);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+
+    // Display current sensor reading on line two
+    SendI2C2(LED,B);
+    SendI2C2(LED,R);
+    SendI2C2(LED,E);
+    SendI2C2(LED,A);
+    SendI2C2(LED,L);
+    SendI2C2(LED,COLON);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C2(LED,ParseTens(realBatt));
+    SendI2C2(LED,ParseFirst(realBatt));
+    SendI2C2(LED,DECIMAL);
+    SendI2C2(LED,ParseSecond(realBatt));
+    SendI2C2(LED,ParseThird(realBatt));
     SendI2C3(LED,LEDREG,LEDRIGHT);
     SendI2C2(LED,V);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
+    SendI2C3(LED,LEDREG,LEDRIGHT);
 
     // Display battery stack reading on line three
-    SendI2C3(LED,LEDREG,LEDCLR);
-    SendI2C3(LED,LEDREG,LINETHREE);
-    SendI2C2(LED,B);
-    SendI2C2(LED,V);
+    SendI2C2(LED,R);
+    SendI2C2(LED,M);
     SendI2C2(LED,O);
-    SendI2C2(LED,L);
-    SendI2C2(LED,T);
+    SendI2C2(LED,S);
     SendI2C2(LED,COLON);
     SendI2C3(LED,LEDREG,LEDRIGHT);
-    SendI2C2(LED,ParseFirst(Battery_volt));
+    SendI2C2(LED,ParseFirst(realMos));
     SendI2C2(LED,DECIMAL);
-    SendI2C2(LED,ParseSecond(Battery_volt));
-    SendI2C2(LED,ParseThird(Battery_volt));
+    SendI2C2(LED,ParseSecond(realMos));
+    SendI2C2(LED,ParseThird(realMos));
     SendI2C3(LED,LEDREG,LEDRIGHT);
     SendI2C2(LED,V);
-
-    // update temperature sensor values from battery
-    updateTemps();
 
     // populate sensor readings, update values
     getAnalog();
+    
+    // update temperature sensor values from battery
+    updateTemps();
     updateValues();
+
+    // delay timer to control delay period
+    delayTimer = delayTimer + 1;
 
     if(debug==true) {
         // show values (estimated)
@@ -230,14 +290,31 @@ void __ISR(8, IPL3AUTO) Timer2Hand(void)
         printf("MOSFET voltage is: %5.2f V\n", mosVolt);
     }
 
+    // All charging logic follows below
+
     // Shuts down charger entirely if temperatures get too hot.
+    // Switches between isTooHot false/true states
     if(tempControlOn == true) {
         printf("\nTemperature control is on...\n");
-        if(temp1 >= tempLimit | temp2 >= tempLimit | temp3 >= tempLimit |
-                temp4 >= tempLimit | temp5 >= tempLimit | temp6 >= tempLimit) {
+        if(temp1 >= tempLimit || temp2 >= tempLimit || temp3 >= tempLimit ||
+                temp4 >= tempLimit || temp5 >= tempLimit || temp6 >= tempLimit) {
             shift = 0;
 
+            isTooHot = true;
             writeToDAC();
+
+            // RE3 on as warning light for high temp
+            LATEbits.LATE3=1;
+            LATEbits.LATE2=0;
+            LATEbits.LATE1=0;
+            LATEbits.LATE0=1;
+        }
+        // goes back into charging state if temp limit goes low enough
+        else if(temp1 >= tempLimit - 10 || temp2 >= tempLimit - 10 || temp3 >= tempLimit - 10||
+                temp4 >= tempLimit - 10 || temp5 >= tempLimit - 10 || temp6 >= tempLimit - 10) {
+            // resets delay timer to avoid early transition to trickle state
+            delayTimer = 0;
+            isTooHot = false;
         }
     }
     else {
@@ -246,44 +323,60 @@ void __ISR(8, IPL3AUTO) Timer2Hand(void)
     }
 
     // when stack voltage is low but current isn't low, keep doing full charge
-    if(realStack < maxVoltage || current > 1.0) {
+    if(!isHighCurrentDone && !isTooHot && !isTrickleDone) {
         fullCharge();
+
         if(debug == true)
             printf("\nDoing full charge routine");
+        LATEbits.LATE3=0;
+        LATEbits.LATE2=0;
+        LATEbits.LATE1=0;
+        LATEbits.LATE0=1;
     }
-    // when stack is high AND current is low, it's time to trickle charge!
-    else if(realStack >= maxVoltage - 2.0 && current < 1.0) {
-        isFullDone = true;
-
+    // when stack is high AND current is low, it's time to trickle charge
+    else if(isHighCurrentDone && delayTimer >= 62 && !isTooHot && !isTrickleDone) {
         trickleTimer = trickleTimer + 1;
 
         trickleCharge();
         if(debug == true)
             printf("\nTrickle charging");
+        LATEbits.LATE3=0;
+        LATEbits.LATE2=0;
+        LATEbits.LATE1=1;
+        LATEbits.LATE0=1;
     }
 
-    // if trickleCharge runs for 1 hour (currently 120 ISRs), charge is done.
-    if(trickleTimer >= 120) {
+    // if trickleCharge runs for 1 hour (currently ~7200 ISRs), charge is done.
+    // adjust trickle charge state done
+    if(trickleTimer >= 3605 && isTrickleDone) {
         shift = 0;
         writeToDAC();
 
-        isChargeDone = true;
+        isTrickleDone = true;
+        LATEbits.LATE3=1;
+        LATEbits.LATE2=0;
+        LATEbits.LATE1=0;
+        LATEbits.LATE0=1;
+
         if(debug == true) {
             printf("\nCharging routine is done!\n");
         }
-
-        // TO-DO:  logic to output charge is done to LCD display
+    }
+    // when current drops below 1.0 amp, switch to conditioning trickle state
+    if(current < 1.0 && delayTimer >= 62) {
+        isHighCurrentDone = true;
     }
 }
 
-// Configure bits for Timer operation
+// Configure bits for Timer operation.  Timer fires every half-second.
 void ConfigTime()
 {
     // Stops Timer and Clears register
     T2CON = 0x0;
-    TMR2 = 0x0;
+    TMR2 = 0xFD8E;
+
     // Set PR to 65535 originally 16000 with 3E80
-    PR2 = 0xFFFF;     
+    PR2 = 0x0FA0;
     
     // Set prescaler at 1:256
     T2CONSET = 0x0070;
@@ -301,57 +394,44 @@ void ConfigTime()
 }
 
 // Configure analog registers to read value from sensor
-// TO-DO: ADD SIX ANALOG READ PINS FOR TEMP SENSORS
 void ConfigAnalog()
 {
-    // ensure the ADC is off before setting the configuration
-    CloseADC10();
-    // Turn module on  |ouput in integer| trigger mode auto | enable autosample
-    #define PARAM1  ADC_MODULE_ON | ADC_FORMAT_INTG16 | ADC_CLK_AUTO | ADC_AUTO_SAMPLING_ON
-    // ADC ref external   | disable offset test    | disable scan mode
-    //      | perform 8 samples | use dual buffers | use alternate mode
-    #define PARAM2  ADC_VREF_AVDD_AVSS | ADC_OFFSET_CAL_DISABLE | ADC_SCAN_ON | ADC_SAMPLES_PER_INT_12 | ADC_ALT_BUF_OFF | ADC_ALT_INPUT_OFF
-    // use ADC PB clock| set sample time | auto
-    #define PARAM3  ADC_CONV_CLK_INTERNAL_RC | ADC_SAMPLE_TIME_13 | ADC_CONV_CLK_16Tcy
-    // analog inputs for current sensor, battery voltage,
-    //      mosfet voltage, temp sensors.
-    #define PARAM4  ENABLE_ALL_ANA
-    // do not assign channels to scan
-    #define PARAM5  0
+    // enable analog pins 8, 9, 12
+    DDPCONbits.JTAGEN = 0;
+    
+    IFS1CLR = 2; //clear ADC conversion interrupt
+    IEC1SET = 2; //enable ADC interrupt
+    AD1PCFG = 0x0000; //Configure relevant pins to analog
+    AD1CON1 = 0b00000000000000001000000011100110; //Configure Sample clock source
+    AD1CON2 = 0b0000010000100000; //Configure ADC voltage reference
 
-    // configure all analog pins to read in (using sample A)
-    SetChanADC10(ADC_CH0_NEG_SAMPLEA_NVREF);
-    // configure ADC using the parameters defined above
-    OpenADC10( PARAM1, PARAM2, PARAM3, PARAM4, PARAM5 );
-    // Note the 65 NS minimum TAD from datasheet, don't use FRM
-    //AD1CON3bits.ADCS=0x01;
-    EnableADC10();
+    AD1CON3 = 0x0000; //Configure ADC conversion clock
+    AD1CON3bits.SAMC = 0b00001;    //auto sample at 2TAD
+    AD1CON3bits.ADCS = 0b00000001; //TAD = 4TPB
+    AD1CHS = 0x00000000; //Configure input channels- CH0+ input,
+
+    AD1CON2bits.CSCNA=1;
+    AD1CSSL = 0b0001001111111100;
+    AD1CON1SET = 0x8000; //Turn on the ADC module
 }
 
-// Read analog pin values for voltages and temperatures
-void getAnalog()
-{
-    while ( ! mAD1GetIntFlag() )
-    {
-        // wait for the first conversion to complete so there
-        // will be vaild data in ADC result registers
-    }
-    Csensor_volt = ReadADC10(12)*.003185; // pin 12 (APPEARS BROKEN)
-    Battery_volt = ReadADC10(7)*.003185;  // pin 7
+// Get all analog values
+void getAnalog() {
+    while( ! IFS1bits.AD1IF); //wait until buffers contain new samples
+        AD1CON1bits.ASAM = 0;     //stop automatic sampling (shut down ADC basically)
 
-    // get mosfet voltage
-    mosVolt = ReadADC10(6) * .003185; // pin 6
-
-    // get temp sensor voltages
-    vt1 = ReadADC10(2) * .003185; // pin 2
-    vt2 = ReadADC10(3) * .003185; // pin 3
-    vt3 = ReadADC10(4) * .003185; // pin 4
-    vt4 = ReadADC10(5) * .003185; // pin 5
-    vt5 = ReadADC10(8) * .003185; // pin 8
-    vt6 = ReadADC10(9) * .003185; // pin 9
-
-    mAD1ClearIntFlag();
-    // Clear ADC interrupt flag
+        vt1 = ADC1BUF0*.003185;
+        vt2 = ADC1BUF1*.003185;
+        vt3 = ADC1BUF2*.003185;
+        vt4 = ADC1BUF3*.003185;
+        mosVolt = ADC1BUF4*.003185;
+        Battery_volt = ADC1BUF5*.003185;
+        vt5 = ADC1BUF6*.003185;
+        vt6 = ADC1BUF7*.003185;
+        Csensor_volt = ADC1BUF8*.003185;
+        
+        IFS1bits.AD1IF = 0;
+        AD1CON1bits.ASAM = 1;  //restart ADC and sampling
 }
 
 // Configure I2C registers
@@ -472,21 +552,17 @@ void SendI2C2(char addrs, char data)
 }
 
 // Charge full stack of batteries from zero until they can be used.
+//    Constant voltage phase
 //    Operating conditions:  82.8V to 90V whole stack, current < 10A (fuse)
 //    For full charge, voltage must be controlled at ~88V
 void fullCharge()
 {
-    if(current >= maxCurrent) {
-        // constrict MOSFET output by 5 if current gets too high
-        shift = shift - 5;
-
-        if(debug == true) {
-            printf("\nWARNING:  CURRENT IS AT/ABOVE LIMIT!");
-            printf("Shifting down by 5!\n");
-        }
+    if(current >= maxCurrent - 1.5) {
+        // constrict MOSFET output by 1 if current gets too high
+        shift = shift - 1;
         writeToDAC();
     }
-    else if(realStack < maxVoltage && current < maxCurrent) {
+    if(realStack < (maxVoltage)) {
         // increment DAC out value by 1 if stack voltage is too low
         shift = shift + 1;
 
@@ -496,10 +572,10 @@ void fullCharge()
         }
         writeToDAC();
     }
-    else if(realStack > maxVoltage && current < maxCurrent) {
+    else if(realStack >= (maxVoltage)) {
         // decrease DAC out value by 1 if stack voltage is too high
         shift = shift - 1;
-        
+
         // Output to UART in text
         if(debug == true) {
             printf("\nShifting down...");
@@ -509,39 +585,41 @@ void fullCharge()
 }
 
 // Last hour of charge should control current @ 2A
+//    Constant current phase
 void trickleCharge() {
-    double trickleCurrent = 2.0;
+    double trickleCurrent = maxCurrent / 2.0;
 
+    // increase DAC out value by 1 to push it closer to required current
     if(current < trickleCurrent) {
-        // increase DAC out value by 1 to push it closer to required current
         shift = shift + 1;
         writeToDAC();
     }
+    // decrease DAC out value by 1 if current gets too high
     else if(current > trickleCurrent) {
-        // decrease DAC out value by 1 if current gets too high
         shift = shift - 1;
         writeToDAC();
-    }
-    else {
-        // hold current DAC value at 2 Amps; shift stays constant
     }
 }
 
 // Constrict value of shift to 8 bits, 0 through 255
 void shiftSafety() {
-    if(shift >= 255)
+    if(shift > 255)
         shift = 255;
-    else if(shift <= 0)
+    else if(shift < 0)
         shift = 0;
 }
 
 // update variables that store current/voltage
 void updateValues() {
     // linear fit conversion from voltage to current
-    //      Needs more work, probably
-    current = abs(10*(1.482*Csensor_volt - 3.7085));
-    // estimated voltage divider conversion from analog pin read in
-    realStack = Battery_volt * 88.0 / maxStackRead;
+    //   experientially derived
+    double fakeCVolt = Csensor_volt * 2.50 / 1.30 - 2.50;
+    current = 15.132 * fakeCVolt - 0.0537;
+
+    // conversion of mosVolt to read
+    realMos = mosVolt / .18;
+    // gives real stack voltage
+    realBatt = Battery_volt / 0.03101 - realMos;
 }
 
 // updates temperatures of battery stack
@@ -566,6 +644,7 @@ void updateTemps() {
 
 // Write value of shift to DAC output register, controlling shift value as 8 bits
 void writeToDAC() {
+    shiftSafety();
     if(debug == true) {
         printf("Writing shift value of: %3d\n", shift);
         printf("Calc. Current is: %3.2f A\n", current);
@@ -573,24 +652,57 @@ void writeToDAC() {
         printf("Current Sensor Reading is: %5.2f V\n", Csensor_volt);
         printf("Stack Voltage Reading is: %5.2f V\n", Battery_volt);
     }
-
-    shiftSafety();
     // write value to DAC Vout register
     SendI2C3(DAC,DACOUT,shift);
 }
 
+// parse tens place of input double for printing to LCD
+char ParseTens(double in) {
+   if(fmod(in/10,10.0)<1)
+        return ZERO;
+   else if(fmod(in/10,10.0)<2)
+        return ONE;
+   else if(fmod(in/10,10.0)<3)
+        return TWO;
+   else if(fmod(in/10,10.0)<4)
+        return THREE;
+   else if(fmod(in/10,10.0)<5)
+        return FOUR;
+   else if(fmod(in/10,10.0)<6)
+        return FIVE;
+   else if(fmod(in/10,10.0)<7)
+        return SIX;
+   else if(fmod(in/10,10.0)<8)
+        return SEVEN;
+   else if(fmod(in/10,10.0)<9)
+        return EIGHT;
+   else if(fmod(in/10,10.0)<10)
+        return NINE;
+}
 
 // Parse first digit (ones place) of input double  for printing to LCD
 char ParseFirst(double in)
 {
-    if(in<1)
+   if(fmod(in,10.0)<1)
         return ZERO;
-    if(in<2)
+   else if(fmod(in,10.0)<2)
         return ONE;
-    if(in<3)
+   else if(fmod(in,10.0)<3)
         return TWO;
-    if(in<4)
+   else if(fmod(in,10.0)<4)
         return THREE;
+   else if(fmod(in,10.0)<5)
+        return FOUR;
+   else if(fmod(in,10.0)<6)
+        return FIVE;
+   else if(fmod(in,10.0)<7)
+        return SIX;
+   else if(fmod(in,10.0)<8)
+        return SEVEN;
+   else if(fmod(in,10.0)<9)
+        return EIGHT;
+   else if(fmod(in,10.0)<10)
+        return NINE;
 }
 
 // Parse second digit (tenth place) of input double for printing to LCD
@@ -598,23 +710,23 @@ char ParseSecond(double in)
 {
    if(fmod(in*10,10.0)<1)
         return ZERO;
-    if(fmod(in*10,10.0)<2)
+   else if(fmod(in*10,10.0)<2)
         return ONE;
-    if(fmod(in*10,10.0)<3)
+   else if(fmod(in*10,10.0)<3)
         return TWO;
-    if(fmod(in*10,10.0)<4)
+   else if(fmod(in*10,10.0)<4)
         return THREE;
-    if(fmod(in*10,10.0)<5)
+   else if(fmod(in*10,10.0)<5)
         return FOUR;
-    if(fmod(in*10,10.0)<6)
+   else if(fmod(in*10,10.0)<6)
         return FIVE;
-    if(fmod(in*10,10.0)<7)
+   else if(fmod(in*10,10.0)<7)
         return SIX;
-    if(fmod(in*10,10.0)<8)
+   else if(fmod(in*10,10.0)<8)
         return SEVEN;
-    if(fmod(in*10,10.0)<9)
+   else if(fmod(in*10,10.0)<9)
         return EIGHT;
-    if(fmod(in*10,10.0)<10)
+   else if(fmod(in*10,10.0)<10)
         return NINE;
 }
 
@@ -623,23 +735,23 @@ char ParseThird(double in)
 {
    if(fmod(in*100,10.0)<1)
         return ZERO;
-    if(fmod(in*100,10.0)<2)
+   else if(fmod(in*100,10.0)<2)
         return ONE;
-    if(fmod(in*100,10.0)<3)
+   else if(fmod(in*100,10.0)<3)
         return TWO;
-    if(fmod(in*100,10.0)<4)
+   else if(fmod(in*100,10.0)<4)
         return THREE;
-    if(fmod(in*100,10.0)<5)
+   else if(fmod(in*100,10.0)<5)
         return FOUR;
-    if(fmod(in*100,10.0)<6)
+   else if(fmod(in*100,10.0)<6)
         return FIVE;
-    if(fmod(in*100,10.0)<7)
+   else if(fmod(in*100,10.0)<7)
         return SIX;
-    if(fmod(in*100,10.0)<8)
+   else if(fmod(in*100,10.0)<8)
         return SEVEN;
-    if(fmod(in*100,10.0)<9)
+   else if(fmod(in*100,10.0)<9)
         return EIGHT;
-    if(fmod(in*100,10.0)<10)
+   else if(fmod(in*100,10.0)<10)
         return NINE;
 }
 
@@ -649,11 +761,25 @@ char ParseFirstShift() {
         return ZERO;
     else if(fmod(shift/100,10)<2)
         return ONE;
-    else
+    else if(fmod(shift/100,10)<3)
         return TWO;
+    else if(fmod(shift/100,10)<4)
+        return THREE;
+    else if(fmod(shift/100,10)<5)
+        return FOUR;
+    else if(fmod(shift/100,10)<6)
+        return FIVE;
+    else if(fmod(shift/100,10)<7)
+        return SIX;
+    else if(fmod(shift/100,10)<8)
+        return SEVEN;
+    else if(fmod(shift/100,10)<9)
+        return EIGHT;
+    else
+        return NINE;
 }
 
-// Parse the tenths place of the integer shift for display
+// Parse the tens place of the integer shift for display
 char ParseSecondShift() {
     if(fmod(shift/10,10)<1)
         return ZERO;
