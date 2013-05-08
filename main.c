@@ -116,15 +116,14 @@ double realBatt = 0;
 double maxCurrent = 8.0;
 
 // max voltage across stack, Volts, if 15 V per battery limit
-//double maxVoltage = 90;
-double maxVoltage = 24.04;
+double maxVoltage = 90;
 
 // offset to adjust the DAC
 //      "shift" is the value written to the DAC, which is off the gate of the
 //      array of power MOSFETs.  Lowering "shift" decreases the current allowed
 //      through the MOSFET and thus the battery stack that the FET is in
 //      series with.
-int shift = 20;
+int shift = 0;
 
 // read-in voltages from temperature sensors, in Volts
 double vt1 = 0;
