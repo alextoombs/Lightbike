@@ -26,6 +26,7 @@ THE SOFTWARE.
 Senior Design Lightbike project, ND EE 2013
 
 Team website:  http://seniordesign.ee.nd.edu/2013/Design%20Teams/lightbike/index.html
+
 (Board schematics also available at team website, subject to MIT License)
 
 Embedded software for a battery charger for our senior design project.  
@@ -37,8 +38,11 @@ Designed to be programmed onto a PIC32MX695F512H microcontroller, but anything i
 Programmed using MPLAB IDE 8.1 and a Pickit 3.
 
 Features:
+
 -Feedback from ACS713 Current Sensor and several resistor dividers
+
 -Output of power MOSFETs dynamically controlled by an MCP4706 8-bit DAC
+
 -Now with more comments, and less spot welding of batteries!  (MOSFETs start closed)
+
 -Light indicators on board display charging status even when I2C debug interface not installed
--NC relays 
